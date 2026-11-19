@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { z, ZodError } from 'zod';
 import { pool, transaction } from './db.js';
+import { reservations } from './reservations.js';
 
 export const app = express();
 app.disable('x-powered-by');
@@ -72,8 +73,8 @@ app.patch('/api/beds/:id/status', requirePrototypeWrites, async (req, res, next)
       const locked = await client.query('SELECT id, status FROM beds WHERE id=$1 FOR UPDATE', [id]);
       if (!locked.rowCount) return null;
       const oldStatus = locked.rows[0].status;
-      if (oldStatus !== 'available' && data.status !== 'available') {
-        const error = new Error('Only available beds may be assigned or reserved'); error.status = 409; throw error;
+      if (!['available','cleaning','maintenance'].includes(oldStatus) || !['available','cleaning','maintenance'].includes(data.status)) {
+        const error = new Error('Use reservation/admission workflows for allocated beds'); error.status = 409; throw error;
       }
       const { rows } = await client.query('UPDATE beds SET status=$2, updated_at=NOW() WHERE id=$1 RETURNING id, status', [id, data.status]);
       await client.query('INSERT INTO bed_status_history(bed_id,old_status,new_status,reason) VALUES ($1,$2,$3,$4)', [id, oldStatus, data.status, data.reason]);
@@ -83,6 +84,8 @@ app.patch('/api/beds/:id/status', requirePrototypeWrites, async (req, res, next)
     res.json(result);
   } catch (error) { next(error); }
 });
+app.use('/api/reservations', reservations);
+
 app.use((error, _req, res, _next) => {
   if (error instanceof ZodError) return res.status(400).json({ error: 'Invalid input', details: error.flatten() });
   if (error.code === '23505') return res.status(409).json({ error: 'Duplicate record' });
